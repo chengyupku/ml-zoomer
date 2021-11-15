@@ -1,0 +1,7 @@
+Loading data...
+Traceback (most recent call last):
+  File "zoomer_main.py", line 235, in <module>
+    main()
+  File "zoomer_main.py", line 55, in main
+    data_set_len = len(data_set)
+TypeError: object of type 'NoneType' has no len()
