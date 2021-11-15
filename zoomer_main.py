@@ -54,7 +54,7 @@ def main():
     embed_dim = 64
     genre_count = 20
     sp = 0.8
-    with open('./taglist.pkl', 'rb') as f:
+    with open('./datalist/taglist.pkl', 'rb') as f:
         data_set = pickle.load(f)
         random.shuffle(data_set)
         data_set_len = len(data_set)

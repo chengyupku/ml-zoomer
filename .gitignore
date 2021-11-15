@@ -111,3 +111,4 @@ Params/
 *.npy
 *.csv
 *.p
+test.py
