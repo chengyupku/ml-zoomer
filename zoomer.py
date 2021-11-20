@@ -1,307 +1,290 @@
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
-# import torch.nn.Parameter as Parameter
-import torch.optim
-from gat import GAT
+import math
 
-# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-device = 'cpu'
-class zoomer(nn.Module):
+class ScaledDotProductAttention(nn.Module):
 
-    def __init__(self, user_max_dict, movie_max_dict, convParams, all_user, all_movie, 
-                    adj_mat, embed_dim=32, fc_size=200):
-        '''
+    def forward(self, query, key, value):
+        dk = query.size()[-1]
+        scores = query.matmul(key.transpose(-2, -1)) / math.sqrt(dk)
+        # if mask is not None:
+        #     scores = scores.masked_fill(mask == 0, -1e9)
+        attention = F.softmax(scores, dim=-1)
+        return attention.matmul(value)
 
-        Args:
-            user_max_dict: the max value of each user attribute. {'uid': xx, 'gender': xx, 'age':xx, 'job':xx}
-            user_embeds: size of embedding_layers.
-            movie_max_dict: {'mid':xx, 'mtype':18, 'mword':15}
-            fc_sizes: fully connect layer sizes. normally 2
-        '''
+class _GraphAttentionLayer(nn.Module):
+    def __init__(self, input_dim, bias=True, activation=F.relu):
+        super(_GraphAttentionLayer, self).__init__()
+        self.attnlayer = _AttentionLayer(input_dim, bias, activation)
 
-        super(zoomer, self).__init__()
+    def forward(self, q, k, v):
+        y = self.attnlayer(q, k, v)
+        return y
 
-        # --------------------------------- user channel ----------------------------------------------------------------
-        # user embeddings
-        self.user_num = user_max_dict['uid']
-        self.movie_num = movie_max_dict['mid']
-        # k = torch.Tensor([user_max_dict['uid'], embed_dim])
-        # print(k)
-        # self.embedding_uid = nn.Embedding.from_pretrained(k, freeze=False)
-        # k = torch.tensor(nn.Embedding(user_max_dict['uid'], embed_dim))
-        k = torch.randn(user_max_dict['uid'], embed_dim)
-        self.embedding_uid = nn.Embedding.from_pretrained(k, freeze=False)
-        self.embedding_gender = nn.Embedding(user_max_dict['gender'], embed_dim // 2)
-        self.embedding_age = nn.Embedding(user_max_dict['age'], embed_dim // 2)
-        self.embedding_job = nn.Embedding(user_max_dict['job'], embed_dim // 2)
+class _AttentionLayer(nn.Module):
+    def __init__(self, input_dim, bias=True, activation=F.relu):
+        super(_AttentionLayer, self).__init__()
+        self.linear_q = nn.Linear(input_dim, input_dim, bias)
+        self.linear_k = nn.Linear(input_dim, input_dim, bias)
+        self.linear_v = nn.Linear(input_dim, input_dim, bias)
+        self.linear_o = nn.Linear(input_dim, input_dim, bias)
+        self.activation = activation
 
-        self.all_user = all_user
-        self.all_movie = all_movie
-        self.adj_mat = adj_mat.to(device)
+    def forward(self, q, k, v):
+        # q = q.unsqueeze(1)
+        q, k, v = self.linear_q(q), self.linear_k(k), self.linear_v(v)
+        if self.activation is not None:
+            q = self.activation(q)
+            k = self.activation(k)
+            v = self.activation(v)
+        y = ScaledDotProductAttention()(q, k, v)
+        y = self.linear_o(y)
+        if self.activation is not None:
+            y = self.activation(y)
+        return y
 
-        # user embedding to fc: the first dense layer
-        self.fc_uid = nn.Linear(embed_dim, embed_dim)
-        self.fc_gender = nn.Linear(embed_dim // 2, embed_dim)
-        self.fc_age = nn.Linear(embed_dim // 2, embed_dim)
-        self.fc_job = nn.Linear(embed_dim // 2, embed_dim)
 
-        # concat embeddings to fc: the second dense layer
-        self.fc_user_combine = nn.Linear(4 * embed_dim, fc_size)
+class _MultiLayerPercep(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(_MultiLayerPercep, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, input_dim // 2, bias=True),
+            nn.ReLU(),            
+            nn.Linear(input_dim // 2, output_dim, bias=True),
+        )
 
-        # --------------------------------- movie channel -----------------------------------------------------------------
-        # movie embeddings
-        self.embedding_mid = nn.Embedding(movie_max_dict['mid'], embed_dim)  # normally 32
-        self.embedding_mtype_sum = nn.EmbeddingBag(movie_max_dict['mtype'], embed_dim, mode='sum')
+    def forward(self, x):
+        return self.mlp(x)
 
-        self.fc_mid = nn.Linear(embed_dim, embed_dim)
-        self.fc_mtype = nn.Linear(embed_dim, embed_dim)
 
-        # movie embedding to fc
-        self.fc_mid_mtype = nn.Linear(embed_dim * 2, fc_size)
-
-        # text convolutional part
-        # wordlist to embedding matrix B x L x D  L=15 15 words
-        self.embedding_mwords = nn.Embedding(movie_max_dict['mword'], embed_dim)
-
-        # input word vector matrix is B x 15 x 32
-        # load text_CNN params
-        kernel_sizes = convParams['kernel_sizes']
-        # 8 kernel, stride=1,padding=0, kernel_sizes=[2x32, 3x32, 4x32, 5x32]
-        # self.Convs_text = [nn.Sequential(
-        #     nn.Conv2d(1, 8, kernel_size=(k, embed_dim)),
-        #     nn.ReLU(),
-        #     nn.MaxPool2d(kernel_size=(15 - k + 1, 1), stride=(1, 1))
-        # ).to(device) for k in kernel_sizes]
-
-        self.Convs_text = [nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=(k, embed_dim)),
+class _Aggregation(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(_Aggregation, self).__init__()
+        self.aggre = nn.Sequential(
+            nn.Linear(input_dim, output_dim, bias=True),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(15 - k + 1, 1), stride=(1, 1))
-        ).to(device) for k in kernel_sizes]
+        )
 
-        # movie channel concat
-        self.fc_movie_combine = nn.Linear(embed_dim * 2 + 8 * len(kernel_sizes), fc_size)  # tanh
+    def forward(self, x):
+        return self.aggre(x)
 
-        # BatchNorm layer
-        self.BN_uid = nn.BatchNorm2d(1)
-        self.BN_gender = nn.BatchNorm2d(1)
-        self.BN_age = nn.BatchNorm2d(1)
-        self.BN_job = nn.BatchNorm2d(1)
+
+
+class Zoomer(nn.Module):
+    '''Zoomer model proposed in the paper 
+       Zoomer: Improving and Accelerating Recommendation on Web-Scale Graphs via Regions of Interests
+
+    Args:
+        num_users: the number of users in the dataset.
+        num_items: the number of items in the dataset.
+        num_item_genres: the number of genres of item in the dataset.
+        num_querys: the number of queries in the dataset.
+        emb_dim: the dimension of user and item embedding (default = 64).
+        use_feature_level_attn: whether to use feature level attention (using ROI).
+        use_semantic_level_attn: whether to use semantic level attention (using ROI).
+    '''
+    def __init__(self, num_users, num_items, num_item_genres, num_querys, emb_dim = 64, \
+                    use_feature_level_attn=True, use_semantic_level_attn=True, ):
+        super(Zoomer, self).__init__()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.num_users = num_users
+        self.num_items = num_items
+        self.num_item_genres = num_item_genres
+        self.num_querys = num_querys
+        self.emb_dim = emb_dim
+        self.user_emb = nn.Embedding(self.num_users, self.emb_dim, padding_idx = 0)
+        self.item_id_emb = nn.Embedding(self.num_items, self.emb_dim, padding_idx = 0)
+        self.item_genre_emb = nn.EmbeddingBag(self.num_item_genres, self.emb_dim, padding_idx = 0)
+        self.query_emb = nn.Embedding(self.num_querys, self.emb_dim, padding_idx = 0)
+
+        self.use_roi = True 
+        self.use_feature_level_attn = use_feature_level_attn
+        self.use_semantic_level_attn = use_semantic_level_attn
+        self.feature_level_attn = _AttentionLayer(input_dim=self.emb_dim)
+        self.semantic_attn_layer = _AttentionLayer(input_dim=self.emb_dim)
+        self.item_dense = _MultiLayerPercep(2 * self.emb_dim, self.emb_dim)
         
-        self.BN_mid = nn.BatchNorm2d(1)
-        self.BN_mtype = nn.BatchNorm2d(1)
-
-        self.mapped_embedding_dim = 32
-        self.output_embedding_dim = 16
-
-        self.user_map = nn.Linear(5*embed_dim // 2, self.mapped_embedding_dim)
-        self.movie_map = nn.Linear(2*embed_dim, self.mapped_embedding_dim)
-
-        self.GCN_layer = nn.Linear(self.mapped_embedding_dim, self.output_embedding_dim)
-        self.pred_layer = nn.Linear(self.output_embedding_dim*2, 1)
-
-        self.gat = GAT(nfeat=self.mapped_embedding_dim, 
-                nhid=8, 
-                nclass=self.output_embedding_dim,
-                dropout=0.6, 
-                nheads=2,
-                alpha=0.2).to(device)
-
-        self.all_uid = []
-        self.all_gender = []
-        self.all_age = []
-        self.all_job = []
-        self.all_mid = []
-        self.all_mtype = []
-        self.all_mtite = []
-
-        for idx in range(user_max_dict['uid']):
-            line = all_user.iloc[idx]
-            self.all_uid.append(line[0])
-            self.all_gender.append(line[1])
-            self.all_age.append(line[2])
-            self.all_job.append(line[3])
+        self.feature_map_layer = {}
+        self.feature_map_layer['u'] = _MultiLayerPercep(self.emb_dim, self.emb_dim).to(self.device)
+        self.feature_map_layer['q'] = _MultiLayerPercep(self.emb_dim, self.emb_dim).to(self.device)
+        self.feature_map_layer['i'] = _MultiLayerPercep(2*self.emb_dim, self.emb_dim).to(self.device)
         
-        for idx in range(movie_max_dict['mid']):
-            line = all_movie.iloc[idx]
-            self.all_mid.append(line[0])
-            self.all_mtype.append(line[2])
-            self.all_mtite.append(line[1])          
-
-        self.all_uid = torch.tensor(self.all_uid).to(device)
-        self.all_gender = torch.tensor(self.all_gender).to(device)
-        self.all_age = torch.tensor(self.all_age).to(device)
-        self.all_job = torch.tensor(self.all_job).to(device)
-        self.all_mid = torch.tensor(self.all_mid).to(device)
-        self.all_mtype = torch.tensor(self.all_mtype).to(device)
-        self.all_mtite = torch.tensor(self.all_mtite).to(device)
-
+        self.DSSM = nn.Sequential(
+            nn.Linear(3 * self.emb_dim, 2 * self.emb_dim, bias = True),
+            nn.ReLU(),
+            nn.Linear(2 * self.emb_dim, self.emb_dim, bias = True),
+            nn.ReLU(),
+            nn.Linear(self.emb_dim, 1),
+        )
+        self.gat = _GraphAttentionLayer(input_dim=emb_dim)
         
-        
-        # self.all_movie_embedding = self.all_mid_embedding
+        self.outlayer = _MultiLayerPercep(2 * self.emb_dim, self.emb_dim)
+        self.qu_layer = _MultiLayerPercep(2 * self.emb_dim, self.emb_dim)
+        # self.DSSM = _MultiLayerPercep(3 * self.emb_dim, 1)
         self.sg = nn.Sigmoid()
         
-    def GCN(self, embedding, adj_mat):
-        adj_mat = adj_mat.to(device)
-        outputs = torch.mm(adj_mat, embedding)
-        outputs = self.GCN_layer(outputs)
+    def user_graph_aggregate(self, user_feature, query_feature, u_movie_feature): # [B, E], [B, E], [B, cnt1, E]
+        node_embedding = user_feature
+        node_roi_embedding = query_feature
+        nb_item_embedding = torch.concat([u_movie_feature, user_feature.unsqueeze(1)], 1)   # 【B, cnt1+1, E】
+        if self.use_roi:
+            query_embedding = torch.add(node_embedding, node_roi_embedding)
+        else:
+            query_embedding = node_embedding
+        nb_aggregated_embedding = self.gat(query_embedding.unsqueeze(1), nb_item_embedding, nb_item_embedding).squeeze(1)
+        # print("nb_aggregated_embedding", nb_aggregated_embedding.shape,flush=True)
+        
+        y = torch.concat([node_embedding, nb_aggregated_embedding], axis=1)
+        outputs = self.outlayer(y)
+        # print("outputs", outputs.shape,flush=True)
         return outputs
 
-    # def forward(self, user_input, movie_input):
-    #     # pack train_data
-    #     uid = user_input['uid']
-    #     gender = user_input['gender']
-    #     age = user_input['age']
-    #     job = user_input['job']
-
-    #     mid = movie_input['mid']
-    #     mtype = movie_input['mtype']
-    #     mtext = movie_input['mtext']
-    #     if torch.cuda.is_available():
-    #         uid, gender, age, job,mid,mtype,mtext = \
-    #         uid.to(device), gender.to(device), age.to(device), job.to(device), mid.to(device), mtype.to(device), mtext.to(device)
-    #     # user channel
-    #     feature_uid = self.BN_uid(F.relu(self.fc_uid(self.embedding_uid(uid))))
-    #     feature_gender = self.BN_gender(F.relu(self.fc_gender(self.embedding_gender(gender))))
-    #     feature_age =  self.BN_age(F.relu(self.fc_age(self.embedding_age(age))))
-    #     feature_job = self.BN_job(F.relu(self.fc_job(self.embedding_job(job))))
-
-    #     # feature_user B x 1 x 200
-    #     feature_user = F.tanh(self.fc_user_combine(
-    #         torch.cat([feature_uid, feature_gender, feature_age, feature_job], 3)
-    #     )).view(-1,1,200)
-
-    #     # movie channel
-        feature_mid = self.BN_mid(F.relu(self.fc_mid(self.embedding_mid(mid))))
-        feature_mtype = self.BN_mtype(F.relu(self.fc_mtype(self.embedding_mtype_sum(mtype)).view(-1,1,1,32)))
-
-    #     # feature_mid_mtype = torch.cat([feature_mid, feature_mtype], 2)
-
-    #     # text cnn part
-    #     feature_img = self.embedding_mwords(mtext)  # to matrix B x 15 x 32
-    #     flattern_tensors = []
-    #     for conv in self.Convs_text:
-    #         flattern_tensors.append(conv(feature_img.view(-1,1,15,32)).view(-1,1, 8))  # each tensor: B x 8 x1 x 1 to B x 8
-
-    #     feature_flattern_dropout = F.dropout(torch.cat(flattern_tensors,2), p=0.5)  # to B x 32
-
-    #     # feature_movie B x 1 x 200
-    #     feature_movie = F.tanh(self.fc_movie_combine(
-    #         torch.cat([feature_mid.view(-1,1,32), feature_mtype.view(-1,1,32), feature_flattern_dropout], 2)
-    #     ))
-
-    #     output = torch.sum(feature_user * feature_movie, 2)  # B x rank
-    #     return output, feature_user, feature_movie
-
-
-
-    # def build_feature_level_attn(self):
-    #     for ntype in ['user', ,'query', 'item']:
-    #     pass
-
-    def get_embedding_from_graph(self, gcn_embedding, idx, mode='user'):
-        if mode=='user':
-            return gcn_embedding[idx]
-        elif mode=='movie':
-            return gcn_embedding[idx+self.user_num]
-
-    def forward(self, user_input, movie_input):
-        uid = user_input['uid']
-        gender = user_input['gender']
-        age = user_input['age']
-        job = user_input['job']
-
-        mid = movie_input['mid']
-        mtype = movie_input['mtype']
-        mtext = movie_input['mtext']
-
-        # print(torch.cuda.is_available())
-        # if torch.cuda.is_available():
-        #     self.all_uid, self.all_gender, self.all_age, self.all_job, self.all_mid, self.all_mtype, self.all_mtite = \
-        #         self.all_uid.to(device), self.all_gender.to(device), self.all_age.to(device), self.all_job.to(device), \
-        #         self.all_mid.to(device), self.all_mtype.to(device), self.all_mtite.to(device)
-
-        self.all_uid_embedding = self.embedding_uid(self.all_uid)
-        self.all_gender_embedding = self.embedding_gender(self.all_gender)
-        self.all_age_embedding =  self.embedding_age(self.all_age)
-        self.all_job_embedding = self.embedding_job(self.all_job)
-        self.all_user_embedding = torch.cat([self.all_uid_embedding, self.all_gender_embedding, 
-                                                self.all_age_embedding, self.all_job_embedding], 1)
+    def query_graph_aggregate(self, query_feature, user_feature, q_movie_feature): # [B, E], [B, E], [B, cnt1, E]
+        node_embedding = query_feature
+        node_roi_embedding = user_feature
+        nb_item_embedding = torch.concat([q_movie_feature, query_feature.unsqueeze(1)], 1)
+        if self.use_roi:
+            query_embedding = torch.add(node_embedding, node_roi_embedding)
+        else:
+            query_embedding = node_embedding
+        nb_aggregated_embedding = self.gat(query_embedding.unsqueeze(1), nb_item_embedding, nb_item_embedding).squeeze(1)
+        # print("nb_aggregated_embedding", nb_aggregated_embedding.shape,flush=True)
         
-        self.all_mid_embedding = self.embedding_mid(self.all_mid)
-        self.all_mtype_embedding = self.embedding_mtype_sum(self.all_mtype)
+        y = torch.concat([node_embedding, nb_aggregated_embedding], axis=1)
+        outputs = self.outlayer(y)
+        # print("outputs", outputs.shape,flush=True)
+        return outputs
 
-        feature_img = self.embedding_mwords(self.all_mtite)
-        flattern_tensors = []
-        for conv in self.Convs_text:
-            flattern_tensors.append(conv(feature_img.view(-1,1,15,32)).view(-1,1, 8))  # each tensor: B x 8 x1 x 1 to B x 8
+    def item_graph_aggregate(self, item_feature, user_feature, m_user_feature, m_query_feature): # [B, E], [B, E], [B, 30, E], [B, 5, E]
+        node_embedding = item_feature
+        node_roi_embedding = user_feature
+        nb_embedding = {}
+        nb_aggregated_embedding = {}
+        # print("m_user_feature", m_user_feature.size(), flush=True)
+        # print("item_feature", item_feature.size(), flush=True)
+        # print("node_embedding", node_embedding.size(), flush=True)
+        # print("node_roi_embedding", node_roi_embedding.size(), flush=True)
+        nb_embedding['u'] = torch.concat([m_user_feature, item_feature.unsqueeze(1)], 1)
+        nb_embedding['q'] = torch.concat([m_query_feature, item_feature.unsqueeze(1)], 1)
+        if self.use_roi:
+            query_embedding = torch.add(node_embedding, node_roi_embedding).unsqueeze(1)
+        else:
+            query_embedding = node_embedding.unsqueeze(1)
+        # print("query_embedding", query_embedding.size(), flush=True)
+        # print("nb_embedding[u]", nb_embedding['u'].size(), flush=True)
+        # print("nb_embedding[q]", nb_embedding['q'].size(), flush=True)
+        nb_aggregated_embedding['u'] = self.gat(query_embedding, nb_embedding['u'], nb_embedding['u'])
+        nb_aggregated_embedding['q'] = self.gat(query_embedding, nb_embedding['q'], nb_embedding['q'])
+        # print("nb_aggregated_embedding[u]", nb_aggregated_embedding['u'].size(), flush=True)
+        # print("nb_aggregated_embedding[q]", nb_aggregated_embedding['q'].size(), flush=True)
+        # [B, 1, E]
+        # print("nb_aggregated_embedding", nb_aggregated_embedding.shape,flush=True)
+        
+        if self.use_semantic_level_attn:
+            KV_embedding = torch.concat([nb_aggregated_embedding['u'], nb_aggregated_embedding['q']], 1)
+            outputs = self.semantic_attn_layer(query_embedding, KV_embedding, KV_embedding).squeeze(1)
+        else:
+            y = torch.concat([node_embedding, \
+                    nb_aggregated_embedding['u'].squeeze(1), \
+                    nb_aggregated_embedding['q'].squeeze(1)], \
+                    axis=1)
+            outputs = self.outlayer(y)
+        # print("outputs", outputs.shape,flush=True)
+        return outputs
 
-        # self.all_mtixtle = F.dropout(torch.cat(flattern_tensors,2), p=0.5).view(-1, 32)  # to B x 32
-        self.all_movie_embedding = torch.cat([self.all_mid_embedding, self.all_mtype_embedding], 1)
+    def forward(self, uids, mids, qids, m_genre,
+                m_qids, m_uids, u_mids, q_mids,
+                u_mgenre, q_mgenre
+                ):
+        '''
+        Args:
+            uids: the user id sequences.
+            iids: the item id sequences.
+            u_item_pad: the padded user-item graph.
+            u_user_pad: the padded user-user graph.
+            u_user_item_pad: the padded user-user-item graph.
+            i_user_pad: the padded item-user graph.
 
-        # print(self.all_user_embedding)
-        user_mapped_embedding = self.user_map(self.all_user_embedding)
-        movie_mapped_embedding = self.movie_map(self.all_movie_embedding)
-        all_embedding = torch.cat([user_mapped_embedding, movie_mapped_embedding], 0)
+        Shapes:
+            uids: (B).
+            iids: (B).
+            u_item_pad: (B, ItemSeqMaxLen, 2).
+            u_user_pad: (B, UserSeqMaxLen).
+            u_user_item_pad: (B, UserSeqMaxLen, ItemSeqMaxLen, 2).
+            i_user_pad: (B, UserSeqMaxLen, 2).
 
-        # if torch.cuda.is_available():
-        #     uid, gender, age, job,mid,mtype,mtext = \
-        #     uid.to(device), gender.to(device), age.to(device), job.to(device), mid.to(device), mtype.to(device), mtext.to(device)
-       
-        gcn_embedding = self.gat(all_embedding, self.adj_mat)
-        user_embedding = self.get_embedding_from_graph(gcn_embedding, uid.view(-1), 'user')
-        movie_embedding = self.get_embedding_from_graph(gcn_embedding, mid.view(-1), 'movie')
+        Returns:
+            the predicted rate scores of the user to the item under query.
+        '''
+        # print(qids, q_movies)
+        # print("mids", mids.shape, "m_querys", m_querys.shape, "m_users", m_users.shape)
+        # node features
+        # print("uids", uids.size(), flush=True)
+        # print("mids", mids.size(), flush=True)
+        # print("qids", qids.size(), flush=True)
+        # print("m_genre", m_genre.size(), flush=True)
+        # print("mg_offset", mg_offset.size(), flush=True)
+        # print("m_qids", m_qids.size(), flush=True)
+        # print("m_uids", m_uids.size(), flush=True)
+        # print("u_mids", u_mids.size(), flush=True)
+        # print("q_mids", q_mids.size(), flush=True)
+        # print("u_mgenre", u_mgenre.size(), flush=True)
+        # print("u_mg_offset", u_mg_offset.size(), flush=True)
+        # print("q_mgenre", q_mgenre.size(), flush=True)
+        # print("q_mg_offset", q_mg_offset.size(), flush=True)
+        batch_size = uids.size()[0]
+        mqcnt = m_qids.size()[1]
+        mucnt = m_uids.size()[1]
+        umcnt = u_mids.size()[1]
+        qmcnt = q_mids.size()[1]
+        m_qids = m_qids[:,:,0]
+        m_uids = m_uids[:,:,0]
+        u_mids = u_mids[:,:,0]
+        q_mids = q_mids[:,:,0]
+        
+        m_genre_feature = self.item_genre_emb(m_genre[0], m_genre[1])   # [B, E]
+        user_feature = self.feature_map_layer['u'](self.user_emb(uids))     # [B, E]
+        query_feature = self.feature_map_layer['q'](self.query_emb(qids))   # [B, E]
+        item_id_features = self.item_id_emb(mids)
+        # nb features
+        m_query_feature = self.feature_map_layer['q'](self.query_emb(m_qids))   # [B, cnt1, E]
+        m_user_feature = self.feature_map_layer['u'](self.user_emb(m_uids))     # [B, cnt1, E]
+        
+        q_item_id_features = self.item_id_emb(q_mids)
+        q_m_genre_feature = self.item_genre_emb(q_mgenre[0], q_mgenre[1]).view(-1, qmcnt, self.emb_dim)     # [B, cnt1, E]
+        if self.use_feature_level_attn:
+            context_embedding = query_feature
+            item_features = torch.concat([q_item_id_features.unsqueeze(2), q_m_genre_feature.unsqueeze(2)], 2)
+            q_item_features = self.feature_level_attn(context_embedding.unsqueeze(1).unsqueeze(1), item_features, item_features).squeeze(1).squeeze(2)
+        else:
+            q_item_features = self.feature_map_layer['i'](torch.concat([q_item_id_features, q_m_genre_feature], 2)).squeeze(1)
+        
+        u_item_id_features = self.item_id_emb(u_mids)
+        u_m_genre_feature = self.item_genre_emb(u_mgenre[0], u_mgenre[1]).view(-1, umcnt, self.emb_dim)
+        if self.use_feature_level_attn:
+            context_embedding = user_feature
+            item_features = torch.concat([u_item_id_features.unsqueeze(2), u_m_genre_feature.unsqueeze(2)], 2)
+            u_item_features = self.feature_level_attn(context_embedding.unsqueeze(1).unsqueeze(1), item_features, item_features).squeeze(1).squeeze(2)
+        else:
+            u_item_features = self.feature_map_layer['i'](torch.concat([u_item_id_features, u_m_genre_feature], 2)).squeeze(1)
 
-        um_tensor = torch.cat([user_embedding, movie_embedding], 1)
-        # print(um_tensor)
-        # print(um_tensor.shape)
-        pred = self.pred_layer(um_tensor)
-        pred = self.sg(pred)*5
-        pred_rating = pred.ceil()
-        return pred, pred_rating
-        # uid = user_input['uid']
-        # gender = user_input['gender']
-        # age = user_input['age']
-        # job = user_input['job']
+        if self.use_feature_level_attn:
+            context_embedding = user_feature
+            item_features = torch.concat([item_id_features.unsqueeze(1), m_genre_feature.unsqueeze(1)], 1)
+            item_feature = self.feature_level_attn(context_embedding.unsqueeze(1), item_features, item_features).squeeze(1)
+        else:
+            item_feature = self.feature_map_layer['i'](torch.concat([item_id_features, m_genre_feature], 1)).squeeze(1)
 
-        # mid = movie_input['mid']
-        # mtype = movie_input['mtype']
-        # mtext = movie_input['mtext']
-        # if torch.cuda.is_available():
-        #     uid, gender, age, job,mid,mtype,mtext = \
-        #     uid.to(device), gender.to(device), age.to(device), job.to(device), mid.to(device), mtype.to(device), mtext.to(device)
-        # # user channel
-        # feature_uid = self.BN_uid(F.relu(self.fc_uid(self.embedding_uid(uid))))
-        # feature_gender = self.BN_gender(F.relu(self.fc_gender(self.embedding_gender(gender))))
-        # feature_age =  self.BN_age(F.relu(self.fc_age(self.embedding_age(age))))
-        # feature_job = self.BN_job(F.relu(self.fc_job(self.embedding_job(job))))
+        user_embedding = self.user_graph_aggregate(user_feature, query_feature, u_item_features)
+        query_embedding = self.query_graph_aggregate(query_feature, user_feature, q_item_features)
+        item_embedding = self.item_graph_aggregate(item_feature, user_feature, m_user_feature, m_query_feature)
+        
+        qu_embedding = torch.concat([user_embedding, query_embedding], 1)
 
-        # # feature_user B x 1 x 200
-        # feature_user = torch.tanh(self.fc_user_combine(
-        #     torch.cat([feature_uid, feature_gender, feature_age, feature_job], 3)
-        # )).view(-1,1,200)
+        r_ij = self.DSSM(torch.cat([qu_embedding, item_embedding], 1))
+        pred = self.sg(r_ij)
 
-        # # movie channel
-        # feature_mid = self.BN_mid(F.relu(self.fc_mid(self.embedding_mid(mid))))
-        # feature_mtype = self.BN_mtype(F.relu(self.fc_mtype(self.embedding_mtype_sum(mtype)).view(-1,1,1,32)))
 
-        # # feature_mid_mtype = torch.cat([feature_mid, feature_mtype], 2)
+        return pred
 
-        # # text cnn part
-        # feature_img = self.embedding_mwords(mtext)  # to matrix B x 15 x 32
-        # flattern_tensors = []
-        # for conv in self.Convs_text:
-        #     flattern_tensors.append(conv(feature_img.view(-1,1,15,32)).view(-1,1, 8))  # each tensor: B x 8 x1 x 1 to B x 8
-
-        # feature_flattern_dropout = F.dropout(torch.cat(flattern_tensors,2), p=0.5)  # to B x 32
-
-        # # feature_movie B x 1 x 200
-        # feature_movie = torch.tanh(self.fc_movie_combine(
-        #     torch.cat([feature_mid.view(-1,1,32), feature_mtype.view(-1,1,32), feature_flattern_dropout], 2)
-        # ))
-
-        # output = torch.sum(feature_user * feature_movie, 2)  # B x rank
-        # output = self.sg(output)*5
-        # pred_rating = output.ceil()
-        # return output, pred_rating

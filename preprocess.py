@@ -121,13 +121,13 @@ for uid in tqdm(range(user_cnt+1)):
         tag_list.append((uid, u_m, u_t, u_l))
     
 
-# with open('./datalist/um_list.pkl', 'wb') as f:
+# with open('./datalist/u-m.pkl', 'wb') as f:
 # 	pickle.dump(u_movie_list, f, pickle.HIGHEST_PROTOCOL)
-# with open('./datalist/mu_list.pkl', 'wb') as f:
+# with open('./datalist/m-u.pkl', 'wb') as f:
 # 	pickle.dump(m_user_list, f, pickle.HIGHEST_PROTOCOL)
-# with open('./datalist/mq_list.pkl', 'wb') as f:
+# with open('./datalist/m-q.pkl', 'wb') as f:
 # 	pickle.dump(m_query_list, f, pickle.HIGHEST_PROTOCOL)
-# with open('./datalist/qm_list.pkl', 'wb') as f:
+# with open('./datalist/q-m.pkl', 'wb') as f:
 # 	pickle.dump(q_movie_list, f, pickle.HIGHEST_PROTOCOL)
 with open('./datalist/new_taglist.pkl', 'wb') as f:
 	pickle.dump(tag_list, f, pickle.HIGHEST_PROTOCOL)
