@@ -1,7 +1,27 @@
 Loading data...
+/root/anaconda3/envs/zm/lib/python3.6/site-packages/torch/optim/lr_scheduler.py:134: UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  "https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate", UserWarning)
+/root/anaconda3/envs/zm/lib/python3.6/site-packages/torch/optim/lr_scheduler.py:154: UserWarning: The epoch parameter in `scheduler.step()` was not necessary and is being deprecated where possible. Please use `scheduler.step()` to step the scheduler. During the deprecation, if epoch is different from None, the closed form is used instead of the new chainable form, where available. Please open an issue if you are unable to replicate your use case: https://github.com/pytorch/pytorch/issues/new/choose.
+  warnings.warn(EPOCH_DEPRECATION_WARNING, UserWarning)
+[TRAIN] epoch 1/100 batch loss: 0.2471 (avg 0.2471) (1417.02 im/s)
+  0%|          | 0/725 [00:00<?, ?it/s]  0%|          | 1/725 [00:00<03:31,  3.42it/s]  0%|          | 2/725 [00:00<03:24,  3.53it/s]  0%|          | 3/725 [00:00<03:18,  3.63it/s]  1%|          | 4/725 [00:01<03:16,  3.67it/s]  1%|          | 5/725 [00:01<03:39,  3.27it/s]  1%|          | 6/725 [00:01<03:30,  3.42it/s]  1%|          | 7/725 [00:01<03:23,  3.53it/s]  1%|          | 8/725 [00:02<03:16,  3.65it/s]  1%|          | 9/725 [00:02<03:13,  3.69it/s]  1%|▏         | 10/725 [00:02<03:10,  3.75it/s]  2%|▏         | 11/725 [00:03<03:08,  3.80it/s]  2%|▏         | 12/725 [00:03<03:06,  3.81it/s]  2%|▏         | 13/725 [00:03<03:07,  3.80it/s]  2%|▏         | 14/725 [00:03<03:07,  3.79it/s]  2%|▏         | 15/725 [00:04<03:05,  3.82it/s]  2%|▏         | 16/725 [00:04<03:04,  3.84it/s]  2%|▏         | 16/725 [00:04<03:14,  3.65it/s]
 Traceback (most recent call last):
-  File "zoomer_main.py", line 235, in <module>
+  File "zoomer_main.py", line 267, in <module>
     main()
-  File "zoomer_main.py", line 55, in main
-    data_set_len = len(data_set)
-TypeError: object of type 'NoneType' has no len()
+  File "zoomer_main.py", line 114, in main
+    mae, rmse, auc = validate(valid_loader, model)
+  File "zoomer_main.py", line 233, in validate
+    u_mgenre, u_mgenre_offset, q_mgenre, q_mgenre_offset in tqdm(valid_loader):
+  File "/root/anaconda3/envs/zm/lib/python3.6/site-packages/tqdm/std.py", line 1180, in __iter__
+    for obj in iterable:
+  File "/root/anaconda3/envs/zm/lib/python3.6/site-packages/torch/utils/data/dataloader.py", line 521, in __next__
+    data = self._next_data()
+  File "/root/anaconda3/envs/zm/lib/python3.6/site-packages/torch/utils/data/dataloader.py", line 561, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+  File "/root/anaconda3/envs/zm/lib/python3.6/site-packages/torch/utils/data/_utils/fetch.py", line 49, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/root/anaconda3/envs/zm/lib/python3.6/site-packages/torch/utils/data/_utils/fetch.py", line 49, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/var/lib/container/chengyu/zoomer/ml-zoomer/dataloader.py", line 73, in __getitem__
+    u_mgenre.append(self.movie_genre_list[um[0]])
+KeyboardInterrupt

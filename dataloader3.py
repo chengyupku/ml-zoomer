@@ -8,7 +8,6 @@ class GRDataset(Dataset):
         
         self.data = data
         self.m_query_list = m_query_list
-        print("m_query_list", len(m_query_list), flush=True)
         self.m_user_list = m_user_list
         # print("m_user_list", len(m_user_list), flush=True)
         self.q_movie_list = q_movie_list
@@ -19,6 +18,7 @@ class GRDataset(Dataset):
         # print("movie_genre_list", len(movie_genre_list), flush=True)
 
     def __getitem__(self, index):
+        print(index, flush=True)
         # print(self.data[1][0])
         uid = self.data[index][0]
         # print(uid)
@@ -51,16 +51,10 @@ class GRDataset(Dataset):
         for i in mu:
             mum.append(self.u_movie_list[i[0]]) # [[], [], [],...]
         for i in qm:
-            try:
-                qmq.append(self.m_query_list[i[0]]) # [[], [], [],...]
-            except:
-                print(i, flush=True)
+            qmq.append(self.m_query_list[i[0]]) # [[], [], [],...]
             qmu.append(self.m_user_list[i[0]])
         for i in um:
-            try:
-                umq.append(self.m_query_list[i[0]]) # [[], [], [],...]
-            except:
-                print(i, flush=True)
+            umq.append(self.m_query_list[i[0]]) # [[], [], [],...]
             umu.append(self.m_user_list[i[0]])
         mqmgenre = []
         mumgenre = []

@@ -26,10 +26,10 @@ from torch.autograd import Variable
 # from torch.backends import cudnn
 from sklearn.metrics import roc_auc_score
 
-from utils import collate_fn
+from utils import collate_fn_2
 from zoomer_2 import Zoomer
 from dataloader import GRDataset
-
+torch.set_printoptions(profile="full")
 # parser = argparse.ArgumentParser()
 # parser.add_argument('--dataset_path', default='datasets/Ciao/', help='dataset directory path: datasets/Ciao/Epinions')
 # parser.add_argument('--batch_size', type=int, default=256, help='input batch size')
@@ -54,7 +54,7 @@ def main():
     embed_dim = 64
     genre_count = 20
     sp = 0.8
-    with open('./datalist/taglist.pkl', 'rb') as f:
+    with open('./datalist/new_taglist.pkl', 'rb') as f:
         data_set = pickle.load(f)
         random.shuffle(data_set)
         data_set_len = len(data_set)
@@ -84,8 +84,8 @@ def main():
     train_data = GRDataset(train_set, m_query_list, m_user_list, q_movie_list, u_movie_list, movie_genre_list)
     valid_data = GRDataset(valid_set, m_query_list, m_user_list, q_movie_list, u_movie_list, movie_genre_list)
     # test_data = GRDataset(test_set, u_items_list, u_users_list, u_users_items_list, i_users_list)
-    train_loader = DataLoader(train_data, batch_size = 512, shuffle = True, collate_fn = collate_fn)
-    valid_loader = DataLoader(valid_data, batch_size = 512, shuffle = True, collate_fn = collate_fn)
+    train_loader = DataLoader(train_data, batch_size = 512, shuffle = True, collate_fn = collate_fn_2)
+    valid_loader = DataLoader(valid_data, batch_size = 512, shuffle = True, collate_fn = collate_fn_2)
     # test_loader = DataLoader(test_data, batch_size = args.batch_size, shuffle = False, collate_fn = collate_fn)
 
     model = Zoomer(user_count+1, item_count*5, genre_count+1, query_count+1, embed_dim).to(device)
@@ -168,7 +168,8 @@ def trainForEpoch(train_loader, model, optimizer, epoch, num_epochs, criterion, 
 
     start = time.time()
     # for i, (uids, iids, labels, u_items, u_users, u_users_items, i_users) in tqdm(enumerate(train_loader), total=len(train_loader)):
-    for i, (uids, mids, qids, labels, m_querys, m_users, q_movies, u_movies, movie_genre, mg_offset) in enumerate(train_loader):
+    for i, (uids, mids, qids, labels, m_querys, m_users, q_movies, u_movies, movie_genre, mg_offset, \
+             u_mgenre, u_mgenre_offset, q_mgenre, q_mgenre_offset) in enumerate(train_loader):
         uids = uids.to(device)
         mids = mids.to(device)
         qids = qids.to(device)
@@ -179,14 +180,28 @@ def trainForEpoch(train_loader, model, optimizer, epoch, num_epochs, criterion, 
         u_movies = u_movies.to(device)
         movie_genre = movie_genre.to(device)
         mg_offset = mg_offset.to(device)
+        u_mgenre = u_mgenre.to(device)
+        u_mgenre_offset = u_mgenre_offset.to(device)
+        q_mgenre = q_mgenre.to(device)
+        q_mgenre_offset = q_mgenre_offset.to(device)
         
         optimizer.zero_grad()
-        outputs = model(uids, mids, qids, m_querys, m_users, q_movies, u_movies, movie_genre, mg_offset)
+        # print("u_mgenre", u_mgenre, flush=True)
+        # print("u_mgenre_size", u_mgenre.size(), flush=True)
+        # print("u_mgenre_offset", u_mgenre_offset, flush=True)
+        # print("u_mgenre_offset_size", u_mgenre_offset.size(), flush=True)
+        # print("q_mgenre", q_mgenre, flush=True)
+        # print("q_mgenre_offset", q_mgenre_offset, flush=True)
+
+        outputs = model(uids, mids, qids, movie_genre, mg_offset, m_querys, m_users, u_movies, q_movies, u_mgenre, u_mgenre_offset, q_mgenre, q_mgenre_offset)
+        
         
         # outputs_np = outputs.cpu().detach().numpy()
         # labels_np = labels.cpu().detach().numpy()
         # auc = auc_calculate(labels_np, outputs_np)
         # print('AUC: ', auc)
+        # print("outputs", outputs.view(-1), flush=True)
+        # print("labels", labels.view(-1), flush=True)
         loss = criterion(outputs, labels.unsqueeze(1))
         loss.backward()
         optimizer.step() 
@@ -214,7 +229,8 @@ def validate(valid_loader, model):
     TN = np.zeros((bucket_num+1,), dtype=np.int)
     FN = np.zeros((bucket_num+1,), dtype=np.int)
     with torch.no_grad():
-        for uids, mids, qids, labels, m_querys, m_users, q_movies, u_movies, movie_genre, mg_offset in tqdm(valid_loader):
+        for uids, mids, qids, labels, m_querys, m_users, q_movies, u_movies, movie_genre, mg_offset, \
+             u_mgenre, u_mgenre_offset, q_mgenre, q_mgenre_offset in tqdm(valid_loader):
             uids = uids.to(device)
             mids = mids.to(device)
             qids = qids.to(device)
@@ -225,16 +241,21 @@ def validate(valid_loader, model):
             u_movies = u_movies.to(device)
             movie_genre = movie_genre.to(device)
             mg_offset = mg_offset.to(device)
-            preds = model(uids, mids, qids, m_querys, m_users, q_movies, u_movies, movie_genre, mg_offset)
+            u_mgenre = u_mgenre.to(device)
+            u_mgenre_offset = u_mgenre_offset.to(device)
+            q_mgenre = q_mgenre.to(device)
+            q_mgenre_offset = q_mgenre_offset.to(device)
+            preds = model(uids, mids, qids, movie_genre, mg_offset, m_querys, m_users, u_movies, q_movies, u_mgenre, u_mgenre_offset, q_mgenre, q_mgenre_offset)
             error = torch.abs(preds.squeeze(1) - labels)
             errors.extend(error.data.cpu().numpy().tolist())
-            # true_value = labels.cpu().numpy()
-            # pred_value = preds.cpu().numpy()
+            true_value = labels.cpu().numpy()
+            pred_value = preds.cpu().numpy()
             # print(true_value)
             # print(pred_value)
             get_roc_samples(preds.cpu(), labels.cpu(), TP, FP, TN, FN, bucket_num=bucket_num)
     
-    auc = auc_calculate(TP, FP, TN, FN, bucket_num=bucket_num)
+    # auc = auc_calculate(TP, FP, TN, FN, bucket_num=bucket_num)
+    auc = roc_auc_score(true_value, pred_value)
     print(auc)
 
     mae = np.mean(errors)
